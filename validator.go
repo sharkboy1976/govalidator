@@ -35,7 +35,7 @@ const RF3339WithoutZone = "2006-01-02T15:04:05"
 
 // SetFieldsRequiredByDefault causes validation to fail when struct fields
 // do not include validations or are not explicitly marked as exempt (using `valid:"-"` or `valid:"email,optional"`).
-// This struct definition will fail govalidator.ValidateStruct() (and the field values do not matter):
+// This struct definition will fail govalidator.ValidateStructEx() (and the field values do not matter):
 //     type exampleStruct struct {
 //         Name  string ``
 //         Email string `valid:"email"`
@@ -701,44 +701,92 @@ func toJSONName(tag string) string {
 	return name
 }
 
-// ValidateStruct use tags for fields.
+func joinPath(a, b, c string) (string) {
+	if len(b) == 0 {
+		b = c
+	}
+
+	if len(a) > 0 {
+		return a + "." + b
+	} else {
+		return b
+	}
+}
+
+// ValidateStructEx use tags for fields.
 // result will be equal to `false` if there are any errors.
 func ValidateStruct(s interface{}) (bool, error) {
+	return ValidateStructEx(s, "")
+}
+
+func ValidateStructEx(s interface{}, prefix string) (bool, error) {
 	if s == nil {
 		return true, nil
 	}
+
 	result := true
+
 	var err error
 	val := reflect.ValueOf(s)
+
 	if val.Kind() == reflect.Interface || val.Kind() == reflect.Ptr {
 		val = val.Elem()
 	}
-	// we only accept structs
-	if val.Kind() != reflect.Struct {
-		return false, fmt.Errorf("function only accepts structs; got %s", val.Kind())
+
+	// we now support array and structs
+	if val.Kind() == reflect.Slice {
+		var errs Errors
+
+		for i := 0; i < val.Len(); i++ {
+			kind := val.Index(i).Kind()
+
+			if kind == reflect.Slice || kind == reflect.Struct {
+				if _, err = ValidateStructEx(val.Index(i).Interface(), joinPath(prefix, strconv.Itoa(i), "")); err != nil {
+					errs = append(errs, err)
+				}
+			}
+		}
+
+		// Happy ending
+		if len(errs) != 0 {
+			return false, errs
+		}
+
+		return true, nil
+	} else if val.Kind() != reflect.Struct {
+		return false, fmt.Errorf("function only accepts structs or arrays; got %s", val.Kind())
 	}
+
 	var errs Errors
+
 	for i := 0; i < val.NumField(); i++ {
 		valueField := val.Field(i)
 		typeField := val.Type().Field(i)
+
 		if typeField.PkgPath != "" {
 			continue // Private field
 		}
+
 		structResult := true
-		if (valueField.Kind() == reflect.Struct ||
+
+		if (valueField.Kind() == reflect.Slice || valueField.Kind() == reflect.Struct ||
 			(valueField.Kind() == reflect.Ptr && valueField.Elem().Kind() == reflect.Struct)) &&
 			typeField.Tag.Get(tagName) != "-" {
 			var err error
-			structResult, err = ValidateStruct(valueField.Interface())
+
+			structResult, err = ValidateStructEx(valueField.Interface(), joinPath(prefix, typeField.Name, toJSONName(typeField.Tag.Get("json"))))
+
 			if err != nil {
 				errs = append(errs, err)
 			}
 		}
+
 		resultField, err2 := typeCheck(valueField, typeField, val, nil)
+
 		if err2 != nil {
 
 			// Replace structure name with JSON name if there is a tag on the variable
-			jsonTag := toJSONName(typeField.Tag.Get("json"))
+			jsonTag := joinPath(prefix, typeField.Name, toJSONName(typeField.Tag.Get("json")))
 			if jsonTag != "" {
 				switch jsonError := err2.(type) {
 				case Error:
@@ -748,7 +796,7 @@ func ValidateStruct(s interface{}) (bool, error) {
 					for i2, err3 := range jsonError {
 						switch customErr := err3.(type) {
 						case Error:
-							customErr.Name = jsonTag
+							customErr.Name = joinPath(prefix, typeField.Name, jsonTag)
 							jsonError[i2] = customErr
 						}
 					}
@@ -759,11 +807,14 @@ func ValidateStruct(s interface{}) (bool, error) {
 
 			errs = append(errs, err2)
 		}
+
 		result = result && resultField && structResult
 	}
+
 	if len(errs) > 0 {
 		err = errs
 	}
+
 	return result, err
 }
 
@@ -1104,7 +1155,7 @@ func typeCheck(v reflect.Value, t reflect.StructField, o reflect.Value, options 
 					return false, err
 				}
 			} else {
-				resultItem, err = ValidateStruct(v.MapIndex(k).Interface())
+				resultItem, err = ValidateStructEx(v.MapIndex(k).Interface(), "??")
 				if err != nil {
 					return false, err
 				}
@@ -1123,7 +1174,7 @@ func typeCheck(v reflect.Value, t reflect.StructField, o reflect.Value, options 
 					return false, err
 				}
 			} else {
-				resultItem, err = ValidateStruct(v.Index(i).Interface())
+				resultItem, err = ValidateStructEx(v.Index(i).Interface(), "??")
 				if err != nil {
 					return false, err
 				}
@@ -1136,7 +1187,7 @@ func typeCheck(v reflect.Value, t reflect.StructField, o reflect.Value, options 
 		if v.IsNil() {
 			return true, nil
 		}
-		return ValidateStruct(v.Interface())
+		return ValidateStructEx(v.Interface(), "??")
 	case reflect.Ptr:
 		// If the value is a pointer then check its element
 		if v.IsNil() {
@@ -1144,7 +1195,7 @@ func typeCheck(v reflect.Value, t reflect.StructField, o reflect.Value, options 
 		}
 		return typeCheck(v.Elem(), t, o, options)
 	case reflect.Struct:
-		return ValidateStruct(v.Interface())
+		return ValidateStructEx(v.Interface(), "??")
 	default:
 		return false, &UnsupportedTypeError{v.Type()}
 	}
@@ -1176,7 +1227,7 @@ func isEmptyValue(v reflect.Value) bool {
 }
 
 // ErrorByField returns error for specified field of the struct
-// validated by ValidateStruct or empty string if there are no errors
+// validated by ValidateStructEx or empty string if there are no errors
 // or this field doesn't exists or doesn't have any errors.
 func ErrorByField(e error, field string) string {
 	if e == nil {
@@ -1186,13 +1237,13 @@ func ErrorByField(e error, field string) string {
 }
 
 // ErrorsByField returns map of errors of the struct validated
-// by ValidateStruct or empty map if there are no errors.
+// by ValidateStructEx or empty map if there are no errors.
 func ErrorsByField(e error) map[string]string {
 	m := make(map[string]string)
 	if e == nil {
 		return m
 	}
-	// prototype for ValidateStruct
+	// prototype for ValidateStructEx
 
 	switch e.(type) {
 	case Error:

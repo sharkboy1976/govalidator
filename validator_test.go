@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"encoding/json"
 )
 
 func init() {
@@ -2696,6 +2697,17 @@ func TestValidateStruct(t *testing.T) {
 	TagMap["d_k"] = Validator(func(str string) bool {
 		return str == "d_k"
 	})
+
+	//ype PrivateStruct struct {
+	//	privateField string `valid:"required,alpha,d_k"`
+	//	NonZero      int
+	//	ListInt      []int
+	//	ListString   []string `valid:"alpha"`
+	//	Work         [2]Address
+	//	Home         Address
+	//	Map          map[string]Address
+	//}
+
 	result, err := ValidateStruct(PrivateStruct{"d_k", 0, []int{1, 2}, []string{"hi", "super"}, [2]Address{{"Street", "123456"},
 		{"Street", "123456"}}, Address{"Street", "123456"}, map[string]Address{"address": {"Street", "123456"}}})
 	if result != true {
@@ -3122,7 +3134,7 @@ func TestJSONValidator(t *testing.T) {
 		t.Error("Expected error but got no error")
 	}
 
-	if Contains(err.Error(), "WithJSONName") {
+	if Contains(err.Error(), "with_json_name") {
 		t.Errorf("Expected error message to contain with_json_name but actual error is: %s", err.Error())
 	}
 
@@ -3244,6 +3256,235 @@ bQIDAQAB
 		actual := IsRsaPublicKey(test.rsastr, test.keylen)
 		if actual != test.expected {
 			t.Errorf("Expected TestIsRsaPublicKey(%d, %d) to be %v, got %v", i, test.keylen, test.expected, actual)
+		}
+	}
+}
+
+func TestComplexStructStructure(t *testing.T) {
+
+	type Address struct {
+		Street string `valid:"-"`
+		Zip    string `valid:"numeric" json:"Zip"`
+	}
+
+	type Patient struct {
+		Name        string    `valid:"-"`
+		BirthDay    time.Time `valid:"-"`
+		OfficeAddr  Address   `json:"OfficeAddr"`
+		InvoiceAddr Address   `json:"InvoiceAddr"`
+		HomeAddr    Address   ``
+		Office struct {
+			Street string `valid:"-"`
+			Zip    string `valid:"numeric" json:"office.zip"`
+		}
+	}
+
+	var tests = []struct {
+		param    string
+		expected string
+	}{
+		{"OfficeAddr.Zip", ""},
+		{"InvoiceAddr.Zip", "abc does not validate as numeric"},
+		{"HomeAddr.Zip", "abc does not validate as numeric"},
+		{"Office.Zip", "abc does not validate as numeric"},
+	}
+
+	user := &Patient{
+		Name:     "Herman",
+		BirthDay: time.Now(),
+		OfficeAddr: Address{
+			"abc",
+			"123",
+		},
+		InvoiceAddr: Address{
+			"abc",
+			"abc",
+		},
+		HomeAddr: Address{
+			"abc",
+			"abc",
+		},
+		Office: struct {
+			Street string `valid:"-"`
+			Zip    string `valid:"numeric" json:"office.zip"`
+		}{
+			Street: "abc",
+			Zip:    "abc",
+		},
+	}
+
+	jsonData, _ := json.Marshal(user)
+
+	var result Patient
+	err := json.Unmarshal(jsonData, &result)
+
+	_, err = ValidateStruct(result)
+
+	for _, test := range tests {
+		actual := ErrorByField(err, test.param)
+
+		if actual != test.expected {
+			t.Errorf("Expected ErrorByField(%q) to be %v, got %v", test.param, test.expected, actual)
+		}
+	}
+}
+
+func TestComplexArrayStructure(t *testing.T) {
+
+	type Address struct {
+		Street string `valid:"-"`
+		Zip    string `valid:"numeric" json:"Zip"`
+	}
+
+	type Patient struct {
+		Name        string    `valid:"-"`
+		BirthDay    time.Time `valid:"-"`
+		AStruct     Address   `valid:"-"`
+		OfficeAddrs []Address `json:"OfficeAddr"`
+	}
+
+	var tests = []struct {
+		param    string
+		expected string
+	}{
+		{"OfficeAddrs.0.Zip", ""},
+		{"OfficeAddrs.1.Zip", "abc does not validate as numeric"},
+		{"OfficeAddrs.2.Zip", "abc does not validate as numeric"},
+		{"OfficeAddrs.3.Zip", ""},
+	}
+
+	user := &Patient{
+		Name:     "Herman",
+		BirthDay: time.Now(),
+		AStruct: Address{
+			"abc",
+			"abc",
+		},
+		OfficeAddrs: []Address{
+			{
+				"abc",
+				"123",
+			},
+			{
+				"abc",
+				"abc",
+			},
+			{
+				"abc",
+				"abc",
+			},
+			{
+				"abc",
+				"123",
+			},
+		},
+	}
+
+	jsonData, _ := json.Marshal(user)
+
+	var result Patient
+	err := json.Unmarshal(jsonData, &result)
+
+	_, err = ValidateStruct(result)
+
+	for _, test := range tests {
+		actual := ErrorByField(err, test.param)
+
+		if actual != test.expected {
+			t.Errorf("Expected ErrorByField(%q) to be %v, got %v", test.param, test.expected, actual)
+		}
+	}
+}
+
+func TestComplexStructure(t *testing.T) {
+
+	type Address struct {
+		Street string `valid:"-"`
+		Zip    string `valid:"numeric" `
+	}
+
+	type Role struct {
+		Name string `valid:"length(0|5)"`
+	}
+
+	type Employee struct {
+		Name        string    ``
+		Address     Address   ``
+		Roles []Role `json:"roles"`
+		Rights []string
+	}
+
+	type Company struct {
+		Name        string    ``
+		Address     Address   ``
+		Employees []Employee `json:"employees"`
+	}
+
+	var tests = []struct {
+		param    string
+		expected string
+	}{
+		{"Name", ""},
+		{"Address.Zip", "abc does not validate as numeric"},
+		{"Employees.0.Address.Zip", "abc does not validate as numeric"},
+		{"Employees.1.Address.Zip", "abc1 does not validate as numeric"},
+		{"Employees.1.Roles.0.Name", "role 1 does not validate as length(0|5)"},
+	}
+
+	data := &Company{
+		Name:     "Herman",
+		Address: Address{
+			"abc",
+			"abc",
+		},
+		Employees: []Employee{
+			{
+				Name:"Hans",
+				Address: Address{
+					"abc",
+					"abc",
+				},
+				Roles: []Role{
+					{Name:"role1"},
+					{Name:"role2"},
+				},
+				Rights:[]string{
+					"right 1",
+					"right 2",
+				},
+			},
+			{
+				Name:"Werner",
+				Address: Address{
+					"abc1",
+					"abc1",
+				},
+				Roles: []Role{
+					{Name:"role 1"},
+					{Name:"role3"},
+				},
+				Rights:[]string{
+					"right 1",
+					"right 2",
+				},
+			},
+		},
+	}
+
+	jsonData, _ := json.Marshal(data)
+
+	var result Company
+	err := json.Unmarshal(jsonData, &result)
+
+	_, err = ValidateStruct(result)
+
+	fmt.Println(err)
+
+	for _, test := range tests {
+		actual := ErrorByField(err, test.param)
+
+		if actual != test.expected {
+			t.Errorf("Expected ErrorByField(%q) to be %v, got %v", test.param, test.expected, actual)
 		}
 	}
 }
